@@ -1,0 +1,181 @@
+Jaeger – это программное обеспечение, которое используется для отслеживания и устранения проблем во взаимосвязанных программных компонентах, называемых микросервисами.
+
+Несколько микросервисов взаимодействуют между собой с целью выполнения единой программной функции. 
+
+Jaeger используется  для визуализации цепочки событий при взаимодействии микросервисов, чтобы изолировать проблему, когда что-то идет не так, как требуется.
+
+Jaeger также называется трассировкой Jaeger, потому что отслеживает, или трассирует, путь запроса через серию взаимодействий между микросервисами.
+
+Компоненты архитектуры Jaeger:
+
+    Jaeger Client: реализация OpenTracing API для инструментирования приложений.
+    Jaeger Agent: сетевой демон, который ожидает получения спанов по UDP.
+    Jaeger Collector: получает трейсы от агентов и прогоняет их по конвейеру обработки.
+    Storage: место, где хранятся трейсы.
+    Jaeger Query: сервис, который извлекает трейсы из хранилища и отображает их в пользовательском интерфейсе.
+
+Jaeger Clickhouse plugin:
+
+    install clickhouse
+
+          helm repo add bitnami https://charts.bitnami.com/bitnami && helm install clickhouse bitnami/clickhouse --version 3.5.3
+
+      2. CREATE DATABASE to use ON CLUSTER:
+
+CREATE DATABASE IF NOT EXISTS jaeger ON CLUSTER default ENGINE=Atomic;
+USE jaeger;
+ 
+CREATE TABLE IF NOT EXISTS jaeger_spans_local ON CLUSTER default (
+    timestamp DateTime CODEC(Delta, ZSTD(1)),
+    traceID String CODEC(ZSTD(1)),
+    model String CODEC(ZSTD(3))
+) ENGINE ReplicatedMergeTree
+PARTITION BY toDate(timestamp)
+ORDER BY traceID
+SETTINGS index_granularity=1024;
+ 
+CREATE TABLE IF NOT EXISTS jaeger_index_local ON CLUSTER default (
+    timestamp DateTime CODEC(Delta, ZSTD(1)),
+    traceID String CODEC(ZSTD(1)),
+    service LowCardinality(String) CODEC(ZSTD(1)),
+    operation LowCardinality(String) CODEC(ZSTD(1)),
+    durationUs UInt64 CODEC(ZSTD(1)),
+    tags Array(String) CODEC(ZSTD(1)),
+    INDEX idx_tags tags TYPE bloom_filter(0.01) GRANULARITY 64,
+    INDEX idx_duration durationUs TYPE minmax GRANULARITY 1
+) ENGINE ReplicatedMergeTree
+PARTITION BY toDate(timestamp)
+ORDER BY (service, -toUnixTimestamp(timestamp))
+SETTINGS index_granularity=1024;
+ 
+CREATE MATERIALIZED VIEW IF NOT EXISTS jaeger_operations_local ON CLUSTER default
+ENGINE ReplicatedMergeTree
+PARTITION BY toYYYYMM(date) ORDER BY (date, service, operation)
+SETTINGS index_granularity=32
+POPULATE
+AS SELECT
+    toDate(timestamp) AS date,
+    service,
+    operation,
+count() as count
+FROM jaeger.jaeger_index_local
+GROUP BY date, service, operation;
+ 
+ 
+CREATE TABLE IF NOT EXISTS jaeger_spans ON CLUSTER default AS jaeger.jaeger_spans_local ENGINE = Distributed(default, jaeger, jaeger_spans_local, cityHash64(traceID));
+CREATE TABLE IF NOT EXISTS jaeger_index ON CLUSTER default AS jaeger.jaeger_index_local ENGINE = Distributed(default, jaeger, jaeger_index_local, cityHash64(traceID));
+CREATE TABLE IF NOT EXISTS jaeger_operations on CLUSTER default AS jaeger.jaeger_operations_local ENGINE = Distributed(default, jaeger, jaeger_operations_local, rand());
+
+или создать автоматически, указав в ConfigMap из примера ниже:
+
+init_tables: true
+replication: true
+
+3. Create Jaeger ConfigMap:
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jaeger-clickhouse
+data:
+  config.yaml: |
+    address: clickhouse:9000
+    username: clickhouse_user
+    password: clickhouse_password
+    init_tables: true
+    replication: true
+    database: jaeger
+    ttl: 7
+    spans_table: jaeger_spans
+    spans_index_table: jaeger_index
+    operations_table: jaeger_operations
+
+Deploy Jaeger operator:
+kubectl create namespace jaeger && \
+
+kubectl create -f https://github.com/jaegertracing/jaeger-operator/releases/download/v1.46.0/jaeger-operator.yaml -n jaeger
+
+5. Deploy Jaeger:
+
+apiVersion: jaegertracing.io/v1
+kind: Jaeger
+metadata:
+  name: jaeger-clickhouse
+spec:
+  strategy: production
+  query:
+    options:
+      log-level: info
+      query:
+        base-path: /
+  collector:
+    minReplicas: 2
+    maxReplicas: 3
+    resources:
+      limits:
+        cpu: 500m
+        memory: 516Mi
+  storage:
+    type: grpc-plugin
+    grpcPlugin:
+      image: ghcr.io/jaegertracing/jaeger-clickhouse:0.7.0
+    options:
+      grpc-storage-plugin:
+        binary: /plugin/jaeger-clickhouse
+        configuration-file: /plugin-config/config.yaml
+        log-level: debug
+  volumeMounts:
+    - name: plugin-config
+      mountPath: /plugin-config
+  volumes:
+    - name: plugin-config
+      configMap:
+        name: jaeger-clickhouse
+  affinity:
+    podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - jaeger
+              topologyKey: kubernetes.io/hostname
+
+6. Profit
+
+Умельшение "полезной" дисковой нагрузки Clickhouse
+
+tables (in database system):
+
+    trace_log
+    part_log
+    metric_log
+    asynchronous_metric_log
+
+Так как указанные таблицы имеют engine MergeTree, нижеперечисленные действия необходимо выполнить на каждой ноде кластера Clickhouse
+
+необходимо задать TTL, в течение которого будут храниться данные:
+
+ALTER TABLE asynchronous_metric_log MODIFY TTL toDate(now()) + 7;
+После оптимизировать таблицу:
+OPTIMIZE TABLE trace_log FINAL;
+
+Также можно их полностью очистить, используя команду:
+TRUNCATE TABLE [IF EXISTS] $table_name
+
+info: Запрос TRUNCATE не поддерживается для следующих движков: View, File, URL, Buffer и Null.
+
+Вывести данные по таблицам в базе:
+
+SELECT database, name, engine_full, formatReadableSize(total_bytes) FROM system.tables;
+
+Ручное удаление по timestamp:
+DELETE FROM jaeger.jaeger_spans_local WHERE timestamp < '2023-09-07 00:00:00';
+OPTIMIZE TABLE jaeger.jaeger_spans_local FINAL;
+
+Аналогичные действия с помощью API:
+export current_time=$(date +"%Y-%m-%d")
+echo echo "DELETE FROM  jaeger.jaeger_spans_local WHERE timestamp < '$current_time';" | curl -X POST 'http://10.0.0.1:8123/?user=jaeger&password=strong' --data-binary @-
+echo 'OPTIMIZE TABLE jaeger.table FINAL' | curl -X POST 'http://10.0.0.1:8123/?user=jaeger&password=strong' --data-binary @-
