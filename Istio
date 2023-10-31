@@ -1,0 +1,169 @@
+itsio — фреймворк централизованного управления сетевым трафиком, реализующий подход Service Mesh.
+
+В частности, Istio прозрачно решает для приложений следующие задачи:
+
+    Использование Mutual TLS:
+        Взаимная достоверная аутентификация сервисов.
+        Шифрование трафика.
+    Авторизация доступа между сервисами.
+    Маршрутизация запросов:
+        Canary-deployment и A/B тестирование — позволяет отправлять часть запросов на новую версию приложения.
+    Управление балансировкой запросов между Endpoint’ами сервиса:
+        Circuit Breaker:
+            Временное исключение endpoint’а из балансировки если превышен лимит ошибок.
+            Настройка лимитов на количество TCP-соединений и количество запросов в сторону одного endpoint’а.
+            Выявление зависших запросов и обрывание их с кодом ошибки (HTTP request timeout).
+        Sticky Sessions:
+            Привязка запросов от конечных пользователей к endpoint’у сервиса.
+        Locality Failover — позволяет отдавать предпочтение endpoint’ам в локальной зоне доступности.
+        Балансировка gRPC-сервисов.
+    Повышение Observability:
+        Сбор и визуализация данных для трассировки прикладных запросов с помощью Jaeger.
+        Сбор метрик о трафике между сервисами в Prometheus и визуализация их в Grafana.
+        Визуализация состояния связей между сервисами и состояния служебных компонентов Istio с помощью Kiali.
+
+install:
+
+kubectl create namespace istio-system
+
+helm install istio-base istio/base -n istio-system --set defaultRevision=default
+
+helm install istiod istio/istiod -n istio-system --wait
+
+kubectl create namespace istio-ingress
+
+helm install istio-ingress istio/gateway -n istio-ingress --wait
+
+usage:
+
+Вставка sidecar'ов
+
+Вставка может быть произведена автоматически или вручную.
+
+Для автоматической вставки sidecar-контейнеров потребуется выставить пространству имён лейбл istio-injection=enabled, что делается следующей командой:
+$ kubectl label namespace test istio-injection=enabled
+
+Теперь каждый pod, который будет разворачиваться в пространстве имён test получит свой sidecar-контейнер
+
+Для ручной необходимо установить label sidecar.istio.io/inject на pod.
+
+Архитектура Istio:
+
+Control Plane
+
+    Он состоит из трёх компонентов: Pilot, Mixer и Citadel, — которые совместными усилиями настраивают Envoy'и для маршрутизации трафика, применяют политики и собирают телеметрические данные.
+
+Data Plane
+
+    Вставляемые в pod'ы прокси позволяют Istio с лёгкостью добиться соответствия нужным нам требованиям.
+
+Необходимо  разрешить входящему трафику приходить в приложение.
+
+Ingress Gateway
+
+    Лучшая практика добиться этого (разрешить трафик в кластере) — через Ingress Gateway в Istio, что располагается у «границы» кластера и позволяет включать для входящего трафика такие функции Istio, как маршрутизация, балансировка нагрузки, безопасность и мониторинг.
+
+Компонент Ingress Gateway и сервис, который пробрасывает его вовне, были установлены в кластер во время инсталляции Istio.
+
+Gateway
+
+    Gateway — это CRD (Custom Resource Definition) в Kubernetes, определяемый после установки Istio в кластере и активирующий возможность указывать порты, протокол и хосты, для которых мы хотим разрешить входящий трафик.
+
+Ресурс VirtualService
+
+    VirtualService указывает Ingress Gateway'ю, как маршрутизировать запросы, которые разрешены внутри кластера.
+
+Kiali
+
+Kiali – это отличный инструмент для того, чтобы начать работать с Istio Service Mesh.
+
+install:
+
+helm install \
+   --set cr.create=true \
+   --set cr.namespace=istio-system \
+   --namespace kiali-operator \
+   kiali-operator \
+   kiali/kiali-operator
+
+Для добавления external_services в kiali необходимо добавить в конфигурационный файл:
+
+external_services:
+  custom_dashboards:
+    enabled: true
+  prometheus:
+    url: http://vmsingle-vm-victoria-metrics-k8s-stack.victorias-secret.svc:8429/
+    root_namespace: istio-system
+  tracing:
+    enabled: true
+    in_cluster_url: \"http://jaeger-clickhouse-query.observability.svc.16685/jaeger\"
+    use_grpc: true
+
+
+Пример конфигурации:
+Gateway:
+
+Для просмотра через cli использовать (так как используется istio APIs): kubectl get gateways.networking.istio.io
+
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: test-gateway
+  namespace: default
+spec:
+  selector:
+    istio: ingress
+  servers:
+  - hosts:
+    - test.example.ru
+    port:
+      name: http
+      number: 80
+      protocol: HTTP
+
+Для TLS:
+
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: test-tls-gateway
+spec:
+  selector:
+    istio: ingress
+  servers:
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: test-tls
+    hosts:
+    - test.example.ru
+
+VirtualService:
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: test-vs
+  namespace: default
+spec:
+  gateways:
+  - test-gateway
+  hosts:
+  - test.nextcontact.ru
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: test.default.svc.k8snew.nextcontact.ru
+        port:
+          number: 8000
+
+Что означает NR/UH/UF в логах прокси Istio?
+
+        NR — No Route (нет маршрута).
+        UH — Upstream Unhealthy (неработоспособный апстрим).
+        UF — Upstream Failure (сбой апстрима).
