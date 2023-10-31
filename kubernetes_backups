@@ -1,0 +1,139 @@
+1.Velero — это клиент-серверная утилита для резервного копирования и восстановления ресурсов кластера Kubernetes
+
+# Download Velero
+curl -fsSL -o velero-version-linux-amd64.tar.gz https://github.com/vmware-tanzu/velero/releases/download/$version/velero-$version-linux-amd64.tar.gz
+tar -xvf velero-$version-linux-amd64.tar.gz
+./velero install --provider aws --plugins velero/velero-plugin-for-aws:v1.5.3 --bucket k8s --secret-file ./credentials-velero \
+--use-volume-snapshots=false –use-restic --use-node-agent --backup-location-config \
+region=msk,s3ForcePathStyle="true",s3Url=https://api-minio.nextcontact.ru
+
+usage:
+
+согласно документации, вешаем annotate на нужный под для бэкапирования pvc:
+kubectl -n foo annotate pod/sample backup.velero.io/backup-volumes=pvc-volume,emptydir-volume
+поддерживает PVC и emptydir
+создаем backup:
+
+velero backup create my-backup --default-volumes-to-fs-backup --include-namespaces my-namespace --selector app=my-app
+velero backup create nginx --default-volumes-to-fs-backup --include-namespaces default - для всего namespace
+velero backup create wordpress --default-volumes-to-fs-backup --include-namespaces wordpress --selector app.kubernetes.io/name=wordpress - для приложения
+
+просмотр логов:
+velero backup logs $BACKUP_NAME
+проверка состояния:
+velero backup describe $BACKUP_NAME
+бэкапирование по cron:
+velero schedule create example-schedule --schedule="0 3 * * *"
+
+velero restore create --from-backup haste --include-namespaces test
+velero restore create --from-backup=fresubin-dev-backup-schedule-20200703080016 --include-cluster-resources=false --restore-volumes=true
+
+2.K8up — это оператор резервного копирования Kubernetes на основе Restic, который будет обрабатывать резервные копии PVC и приложений в кластере Kubernetes 
+source code: https://github.com/k8up-io/k8up
+
+install:
+
+helm repo add k8up-io https://k8up-io.github.io/k8up
+helm install k8up k8up-io/k8up
+
+usage:
+
+kubectl create secret generic minio-credentials --from-literal username=admin --from-literal password=password - создать minio-credentials
+kubectl create secret generic backup-repo --from-literal password=password - задать пароль для Restic
+
+Для бэкапирования PVC необходимо добавить аннотацию (можно воспользоваться kyverno):
+
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: nginx-pvc
+  annotations:
+    k8up.io/backup: 'true'
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 200Mi
+
+Создание планового бэкапа:
+apiVersion: k8up.io/v1
+kind: Backup
+metadata:
+  name: backup-nginx
+spec:
+  failedJobsHistoryLimit: 2
+  successfulJobsHistoryLimit: 2
+  backend:
+    repoPasswordSecretRef:
+      name: backup-repo
+      key: password
+    s3:
+      endpoint: http://minio-api:9000
+      bucket: k8up
+      accessKeyIDSecretRef:
+        name: global-s3-credentials
+        key: accesskey
+      secretAccessKeySecretRef:
+        name: global-s3-credentials
+        key: secretkey
+
+kubectl get  snapshots -n test  - для просмотра доступных снапшотов.
+Restoring to a PVC:
+
+apiVersion: k8up.io/v1
+kind: Restore
+metadata:
+  name: restore2pvc
+spec:
+  snapshot: 12b3a96a
+  backend:
+    repoPasswordSecretRef:
+      name: backup-repo
+      key: password
+    s3:
+      endpoint: http://minio-api.minio.svc.k8snew.nextcontact.ru:9000
+      bucket: k8up
+      accessKeyIDSecretRef:
+        name: global-s3-credentials
+        key: accesskey
+      secretAccessKeySecretRef:
+        name: global-s3-credentials
+        key: secretkey
+  restoreMethod:
+    folder:
+      claimName: restore
+
+Если не указывать snapshot, то будет восстановлена последняя резервная копия 
+В отличие от Velero, k8up позволяет восстановить данные в любой Storage Class. Нужно только заранее создать PVC.
+Объект Schedule определяет частоту, место назначения и секреты, необходимые для резервного копирования элементов в namespace:
+
+apiVersion: k8up.io/v1
+kind: Schedule
+metadata:
+  name: schedule-nginx
+spec:
+  backend:
+    s3:
+      endpoint: http://minio-api.minio.svc.k8snew.nextcontact.ru:9000
+      bucket: nginx-backups
+      accessKeyIDSecretRef:
+        name: global-s3-credentials
+        key: accesskey
+      secretAccessKeySecretRef:
+        name: global-s3-credentials
+        key: secretkey
+    repoPasswordSecretRef:
+      name: backup-repo
+      key: password
+  backup:
+    schedule: '*/5 * * * *'
+    failedJobsHistoryLimit: 2
+    successfulJobsHistoryLimit: 2
+  check:
+    schedule: '0 1 * * 1'
+  prune:
+    schedule: '0 1 * * 0'
+    retention:
+      keepLast: 5
+      keepDaily: 14

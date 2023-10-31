@@ -1,0 +1,58 @@
+MetalLB — это реализация подсистемы балансировки нагрузки для кластеров Kubernetes без операционной системы.
+
+MetalLB выполняет две функции: назначает IP-адреса службам подсистемы балансировки нагрузки Kubernetes из настроенного пула IP-адресов, а затем объявляет IP-адрес внешней сети
+
+install:
+
+helm repo add bitnami https://charts.bitnami.com/bitnami
+
+helm install metallb bitnami/metallb --version 4.5.4
+
+usage:
+ Создаем IPAddressPool:
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: test
+  namespace: metallb
+spec:
+  addresses:
+    - 10.0.0.1-10.0.0.10
+  autoAssign: false
+  avoidBuggyIPs: true 
+
+Создаем L2Advertisement:
+
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: test
+  namespace: metallb
+spec:
+  ipAddressPools:
+  - first-pool
+  nodeSelectors:
+  - matchLabels:
+      kubernetes.io/hostname: NodeA
+  - matchLabels:
+      kubernetes.io/hostname: NodeB
+  - matchLabels:
+      kubernetes.io/hostname: NodeN
+
+Создаем Service с типом LoadBalancer:
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  annotations:
+    metallb.universe.tf/address-pool: $POOL_NAME
+spec:
+  type: LoadBalancer
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    name: http
+
+4.Profit
