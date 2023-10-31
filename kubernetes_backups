@@ -115,7 +115,7 @@ metadata:
 spec:
   backend:
     s3:
-      endpoint: http://minio-api.minio.svc.k8snew.nextcontact.ru:9000
+      endpoint: http://minio-api:9000
       bucket: nginx-backups
       accessKeyIDSecretRef:
         name: global-s3-credentials
