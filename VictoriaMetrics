@@ -1,0 +1,114 @@
+VictoriaMetrics — база данных временных рядов долгого хранения.
+Позиционируется как быстрое, экономичное и масштабируемое хранилище для метрик Prometheus, InfluxDB, OpenTSDB, Graphite.
+Позволяет решить следующие проблемы (на примере Prometheus):
+
+    Данные плохо сжимаются, занимая много дискового пространства.
+    Prometheus не может быть настроен в режиме кластера, что делает решение не до конца надежным и масштабируемым.
+    Глобальный поиск по всем серверам мониторинга. Если у нас много баз Prometheus, сбор данных в общую базу позволит искать информацию в одном инструменте.
+    По умолчанию, Prometheus хранит данные 15 дней. Но это поведение может быть скорректировано опцией storage.tsdb.retention.time. Также лимит на хранение может быть определен в байтах с помощью опции storage.tsdb.retention.size.
+
+install:
+
+helm repo add vm https://victoriametrics.github.io/helm-charts/ && helm repo update
+helm install vm/victoria-metrics-k8s-stack -n victorias-secret (createCRD: true)
+
+usage:
+
+Оператор VictoriaMetrics вводит дополнительные ресурсы в Kubernetes для объявления желаемого состояния приложений Victoria Metrics и Alertmanager. Ресурсы, которые он представляет:
+
+    VMSingle - представляет собой базу данных для хранения метрик
+    VMCluster - представляет собой высокодоступную и отказоустойчивую версию базы данных VictoriaMetrics.
+    VMAgent — агент, который помогает собирать метрики из различных источников и сохранять их в VictoriaMetrics. (Для этого требуется доступ к API Kubernetes)
+    VMAlertmanager — представляет собой конфигурацию alertmanager
+    VMAlertmanagerConfig - позволяет управлять конфигурацией VMAlertmanager.
+    VMAlert — выполняет список заданных правил оповещения или записи по настроенному адресу.
+    VMServiceScrape - генерирует часть конфигурации VMAgent с ролью Endpoint kubernetes_sd для целей обнаружения службы соответствующей службой и ее конечными точками.
+    VMPodScrape - генерирует конфигурационную часть VMAgent с ролью модуля kubernetes_sd, которая будет соответствовать всем модулям, имеющим определенные метки и порты.
+    VMRule - генерирует конфигурацию VMAlert с набором правил, определенным в спецификации VMRule.
+    VMNodeScrape - полезен для мониторинга экспортеров узлов, позволяет создавать парсер для метрик кадвизора
+    VMStaticScrape - генерирует часть конфигурации VMAgent со static_configs, цели для targetEndpoint являются обязательным параметром
+
+Пример VMStaticScrape для сбора метрик приложения, расположенного за пределами кластера:
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMStaticScrape
+metadata:
+  name: asterisk
+spec:
+  jobName: asterisk
+  targetEndpoints:
+    - targets: ["10.0.0.1:8088"]
+      scheme: "http"
+      path: "/metrics"
+      labels:
+        env: dev
+        project: tel
+
+Пример VMServiceScrape:
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: ingress-nginx
+spec:
+  endpoints:
+    - port: metrics
+  namespaceSelector:
+    Any:  false
+    Match Names:
+      ingress-nginx
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+      monitored-by: vm-operator
+
+Grafana data sources:
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: victoriametrics-grafana-datasource
+data:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: victoriametrics
+        type: prometheus
+        orgId: 1
+        url: http://vmcluster-victoria-metrics-cluster-vmselect.default.svc:8481/select/0/prometheus/
+        access: proxy
+        isDefault: true
+        updateIntervalSeconds: 10
+        editable: false
+
+VMAgent'ы можно создавать для сбора отдельных метрик :
+
+Создаем Secret со scrape-configs:
+apiVersion: v1
+kind: Secret
+metadata:
+  name: istio-scrape-configs
+stringData:
+  istiod-additional.yaml: |
+  - job_name: 'istiod'
+    kubernetes_sd_configs:
+    - role: endpoints
+      namespaces:
+        names:
+        - istio-system
+    relabel_configs:
+    - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+      action: keep
+      regex: istiod;http-monitoring
+
+После этого создаем VMAgent и скармливаем ему Secret:
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMAgent
+metadata:
+  name: istio-vmagent
+spec:
+  serviceScrapeSelector: {}
+  replicas: 1
+  serviceAccountName: vmagent
+  additionalScrapeConfigs:
+    name: istio-scrape-configs
+    key: istiod-additional.yaml
+  remoteWrite:
+    - url: "http://vmsingle.default.svc:8429/api/v1/write"
