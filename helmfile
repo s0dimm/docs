@@ -1,0 +1,70 @@
+Helmfile — это декларативная спецификация для развертывания диаграмм управления. Он позволяет:
+
+     Сохранять каталог файлов значений Helm
+    Примените CI/CD к изменениям конфигурации.
+
+source code: https://github.com/roboll/helmfile/tree/master
+
+docs: https://helmfile.readthedocs.io/en/latest/
+
+Для работы необходим Helm и плагин helm-diff (установка плагина: helm plugin install https://github.com/databus23/helm-diff)
+
+    Создаем helmfile.yaml 
+    helmfile apply
+
+Helmfile example:
+
+repositories:
+ - name: bitnami
+   url: https://charts.bitnami.com/bitnami
+ 
+releases:
+- name: nginx
+  namespace: test
+  createNamespace: true
+  labels:
+    test: true
+  chart: bitnami/nginx
+  version: 15.3.4
+  set:
+  - name: replicaCount
+    value: 1
+
+2.Helmwave
+
+Helmwave — это инструмент для декларативного описания деплоя helm-чартов
+
+Особенности Helmwave:
+
+        Пошаговый деплой (depends_on, allow_failure).
+        Отслеживание ресурсов Kubernetes в реальном времени при помощи kubedog.
+        Отсутствие внешних зависимостей: достаточно скачать бинарный файл helmwave и можно начинать деплой.
+
+Helmwave example:
+
+version: "0.32.1"
+ 
+repositories:
+  - name: bitnami
+    url: https://charts.bitnami.com/bitnami
+ 
+.options: &options
+  namespace: test
+  create_namespace: false
+  wait: true
+  timeout: 1m
+  max_history: 3
+ 
+releases:
+  - name: kurva
+    chart:
+      name: bitnami/nginx
+      version: 15.3.4
+    values:
+      - values.yaml
+    <<: *options
+
+usage: 
+helmwave up --build --kubedog -- build a plan, apply your plan
+helmwave rollback -- rollback your plan
+helmwave down -- delete all
