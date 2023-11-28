@@ -179,3 +179,6 @@ OPTIMIZE TABLE jaeger.jaeger_spans_local FINAL;
 export current_time=$(date +"%Y-%m-%d")
 echo echo "DELETE FROM  jaeger.jaeger_spans_local WHERE timestamp < '$current_time';" | curl -X POST 'http://10.0.0.1:8123/?user=jaeger&password=strong' --data-binary @-
 echo 'OPTIMIZE TABLE jaeger.table FINAL' | curl -X POST 'http://10.0.0.1:8123/?user=jaeger&password=strong' --data-binary @-
+
+
+more on: https://github.com/jaegertracing/jaeger-clickhouse/blob/main/guide-kubernetes.md
