@@ -1,0 +1,42 @@
+Мониторинг 
+создаем secret с корневыми сертификатами ETCD:
+kubectl create secret tls etcd-cert -n victorias-secret   --cert=/etc/ssl/etcd/ssl/ca.pem   --key=path/etc/ssl/etcd/ssl/ca-key.pem
+создаем Secret для VMAgent:
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: etcd-scrape-configs
+stringData:
+  etcd-additional.yaml: |
+  - job_name: "etcd"
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true
+      cert_file: "/etc/vm/secrets/etcd-cert/tls.crt"
+      key_file: "/etc/vm/secrets/etcd-cert/tls.key"
+    static_configs:
+    - targets: ["10.0.0.1:2379", "10.0.0.2:2379", "10.0.0.3:2379"]
+
+P.S. /etc/vm/secrets – дефолтный путь, по которому VMAgent монтирует secrets
+
+запускаем VMAgent, скармливаем ему Secret etcd-scrape-configs и монтируем etcd-cert, который создали ранее:
+
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMAgent
+metadata:
+  name: etcd-vmagent
+spec:
+  additionalScrapeConfigs:
+    key: prometheus-additional.yaml
+    name: etcd-scrape-configs
+  arbitraryFSAccessThroughSMs: {}
+  image: {}
+  remoteWrite:
+  - url: http://vmsingle-vm-victoria-metrics-k8s-stack:8429/api/v1/write
+  secrets:
+  - etcd-cert
+  serviceAccountName: etcd-vmagent
+
+метрики получены
+  
