@@ -1,0 +1,137 @@
+asterisk_in_k8s
+используемые компоненты:
+
+    kubevirt
+    macvtap CNI
+    multus
+
+KubeVirt - это дополнение для запуска виртуальных машин в Kubernetes.
+
+macvtap CNI - это плагин, который  позволяет пользователям определять сети Kubernetes поверх существующих хост-интерфейсов.
+
+  source and install: https://github.com/kubevirt/macvtap-cni
+
+multus - это плагин контейнерного сетевого интерфейса (CNI) для Kubernetes, который позволяет подключать несколько сетевых интерфейсов к модулям
+
+  source and install: https://github.com/k8snetworkplumbingwg/multus-cni
+
+install:
+
+патчим kubevirt: (https://kubevirt.io/user-guide/operations/activating_feature_gates/)
+kubectl edit -n kubevirt kubevirt kubevirt
+configuration:
+  developerConfiguration:
+    useEmulation: true
+    featureGates:
+    - LiveMigration
+    - DataVolumes
+    - Macvtap
+
+создаем ConfigMap для macvtap:
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: macvtap-deviceplugin
+data:
+  DP_MACVTAP_CONF: |
+    [
+        {
+            "name"     : "dataplane",
+            "master"   : "ens18",
+            "mode"     : "bridge",
+            "capacity" : 50
+        },
+    ]
+
+cоздаем NetworkAttachmentDefinition в namespace, в котором будет запущена ВМ:
+kind: NetworkAttachmentDefinition
+apiVersion: k8s.cni.cncf.io/v1
+metadata:
+  name: macvtapnetwork
+  annotations:
+    k8s.v1.cni.cncf.io/resourceName: macvtap.network.kubevirt.io/ens18
+spec:
+  config: '{
+      "cniVersion": "0.3.1",
+      "name": "macvtapnetwork",
+      "type": "macvtap",
+      "mtu": 1500
+    }'
+
+Создание ВМ:
+
+скачиваем Debian qcow2:
+wget https://cloud.debian.org/images/cloud/bullseye/20231013-1532/
+
+создаем image для VM:
+virtctl image-upload dv debian-vm-disk -n vms --insecure \
+  --access-mode ReadWriteOnce --size 20Gi \
+  --storage-class local-path\
+  --image-path debian-11-generic-amd64-20231013-1532.qcow2 \
+  --uploadproxy-url https://cdi-uploadproxy.cdi.svc:31727
+
+создаем ВМ и задаем пользователя и пароль:
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  labels:
+    kubevirt.io/vm: debian-vm
+  name: debian-vm
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: debian-vm
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        devices:
+          interfaces:
+          - macvtap: {}
+            name: hostnetwork
+          disks:
+          - disk:
+              bus: virtio
+            name: myrootdisk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+        resources:
+          requests:
+            memory: 2048M
+      networks:
+      - multus:
+          networkName: macvtapnetwork
+        name: hostnetwork
+      volumes:
+      - name: myrootdisk
+        dataVolume:
+          name: debian-vm-disk
+      - cloudInitNoCloud:
+          userData: |-
+            #cloud-config
+            user: root
+            password: qwerty
+            chpasswd: { expire: False }
+            ssh_pwauth: True
+        name: cloudinitdisk
+
+также здесь можно задать настройки для сетевого интерфейса, но для избежания ошибок, лучше после создания ВМ настроить его вручную 
+так же пароль и другие настройки можно произвести заранее:
+virt-customize -a debian-11-generic-amd64-20231013-1532.qcow2 \
+--root-password password:password
+
+либо так:
+guestfish --rw -a debian-11-generic-amd64-20231013-1532.qcow2
+ 
+launch
+ 
+list-filesystems
+ 
+mount /dev/sda1 /
+ 
+vi /etc/shadow && vi /etc/network/interfaces
+ 
+quit
