@@ -1,0 +1,13 @@
+.gitlab/agents/$agent_name/config.yaml
+
+gitops:
+  manifest_projects:
+  - id: test/devops-as-a-service
+    ref:
+      branch: test
+    default_namespace: default
+    paths:
+    - glob: '/*.yaml'
+    reconcile_timeout: 3600s
+    dry_run_strategy: none
+    prune: true
