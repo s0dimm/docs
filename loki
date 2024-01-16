@@ -1,17 +1,43 @@
-Loki — это горизонтально масштабируемая, высокодоступная многопользовательская система агрегации журналов, вдохновленная Prometheus.
+values yandex S3 (one bucket)
 
-Он разработан, чтобы быть очень экономичным и простым в эксплуатации. Он индексирует не содержимое журналов, а набор меток для каждого потока журналов.
+  storage:
+    bucketNames:
+      chunks: loki-logs
+      ruler: loki-logs
+    type: s3
+    s3:
+      endpoint: https://storage.yandexcloud.net
+      region: ru-central1
+      secretAccessKey: ***************************
+      accessKeyId: ******************
+      s3ForcePathStyle: true
+      insecure: false
 
-Loki-стек состоит из трёх компонентов: Promtail, Loki, Grafana.
+  compactor: 
+    retention_enabled: true
+    retention_delete_delay: 2h
+    #apply_retention_interval: 168h
+    retention_delete_worker_count: 150
+    working_directory: /var/loki/compactor/
+    shared_store: s3
+    compaction_interval: 5m
 
-Promtail собирает логи, обрабатывает их и отправляет в Loki. Loki их хранит. А Grafana умеет запрашивать данные из Loki и показывать их.
+  ingester: 
+    chunk_target_size: 1572864
+    chunk_encoding: snappy
+    max_chunk_age: 2h
 
-В Label filters в первой позиции указываем namespace, в котором находится нужное приложение (в примере - nextphone)
+  limits_config:
+    retention_period: 168h
+    max_global_streams_per_user: 10000
+    max_entries_limit_per_query: 10000
+    enforce_metric_name: false
+    max_cache_freshness_per_query: 10m
+    reject_old_samples: true
+    reject_old_samples_max_age: 168h
+    split_queries_by_interval: 15m
+    max_cache_freshness_per_query: 10m
+    split_queries_by_interval: 15m
 
-Во второй позиции Label filters указываем само приложение (в примере - backend)
 
-В пункте "Line contains" указываем то, что необходимо найти
-
-Временной диапазон можно задать как Last N hour or minutes или указать точный диапазон
-После этого необходимо выполнить Run query и дождаться выполнения запроса(обычно не более 10 секунд)
 
