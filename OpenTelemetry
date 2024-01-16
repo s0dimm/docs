@@ -1,0 +1,83 @@
+OpenTelemetry, также известный как OTel, представляет собой открытый стандарт CNCF, который обеспечивает распределенную трассировку и сбор метрик из приложений
+
+source code: https://github.com/open-telemetry/opentelemetry-collector-contrib
+
+Для реализации Jaeger Service Performance Monitoring (SPM) необходим opentelemetry-collector
+
+install:
+helm repo add opentelemetry-helm https://open-telemetry.github.io/opentelemetry-helm-charts
+helm install opentelemetry-collector opentelemetry-helm/opentelemetry-collector --version 0.76.0
+
+values.yaml
+
+config:
+    receivers:
+      jaeger:
+        protocols:
+          thrift_http:
+            endpoint: ${env:MY_POD_IP}:14268
+ 
+      otlp/spanmetrics:
+        protocols:
+          grpc:
+            endpoint: ${env:MY_POD_IP}:65535
+      otlp:
+        protocols:
+          grpc:
+            endpoint: ${env:MY_POD_IP}:4317
+             
+    exporters:
+      prometheus:
+        endpoint: ${env:MY_POD_IP}:8889
+ 
+      otlp:
+        endpoint: test-collector.test.svc:4317
+        tls:
+          insecure: true
+    connectors:
+      spanmetrics:
+       
+    processors:
+      batch:
+ 
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp, jaeger]
+          processors: [batch]
+          exporters: [spanmetrics, otlp]
+        metrics/spanmetrics:
+          receivers: [spanmetrics]
+          exporters: [prometheus]
+
+Через exporters данные будут экспортироваться в jaeger и prometheus (в нашем случае victoriametrics)
+
+Для сбора метрик создается VMStaticScrape: (либо VMServiceScrape)
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMStaticScrape
+metadata:
+  name: otel-collector
+spec:
+  jobName: otel-collector
+  targetEndpoints:
+    - targets: ["opentelemetry-collector.open-telemetry.svc:8889"]
+      scheme: "http"
+      path: "/metrics"
+
+На этом настройка opentelemetry-collector закончена
+Для работы SPM необходимо передать параметры в jaeger.yaml:
+query:
+  metricsStorage:
+    type: prometheus
+  options:
+    log-level: debug
+    prometheus:
+      query:
+        support-spanmetrics-connector: "true"
+      server-url: http://vmsingle-vm-victoria-metrics-k8s-stack.victorias-secret.svc:8429
+    query:
+      base-path: /
+В случае использования SPM в настройках приложения нужно указывать opentelemetry-collector в TRACERS_JAEGER_HTTP_HOST
+Порт стандартный, 14268
+
+
