@@ -1,0 +1,88 @@
+Kyverno — идеальное решение для автоматизации, управления и обеспечения безопасности любой платформы на базе Kubernetes.
+
+Kyverno работает как динамический контроллер допуска в кластере. Он получает от kube-apiserver HTTP-обратные вызовы вебхуков с проверкой и изменением допусков и применяет соответствующие политики для получения результатов, которые обеспечивают соблюдение политик допуска или отклоняют запросы. Политики Kyverno написаны на родном для Kubernetes языке YAML, что значительно сокращает время обучения, необходимое для написания собственных политик. 
+
+Политики Kyverno могут сопоставлять ресурсы, используя селекторы типа ресурса, имени и метки, чтобы инициировать такие действия, как проверка, изменение, генерация и верификация образа для подписи контейнеров и сертификации цепочки программного обеспечения.
+
+install:
+helm repo add kyverno https://kyverno.github.io/kyverno/
+helm repo update
+helm install kyverno kyverno/kyverno --namespace kyverno --create-namespace
+
+
+Политики и правила.
+Политика Kyverno - это набор правил. Каждое правило состоит из match декларации, необязательной exclude декларации и одной из validate, mutate, generate или verifyImages декларации. Каждое правило может содержать только одно validate, mutate generate или verifyImages дочернюю декларацию.
+Политики могут быть определены как ресурсы всего кластера (с использованием вида ClusterPolicy) или ресурсы с пространством имен (с использованием вида Policy.)
+Как и ожидалось, политики пространства имен будут применяться только к ресурсам в пределах пространства имен, в котором они определены, в то время как политики всего кластера применяются к соответствующим ресурсам во всех пространствах имен.
+В противном случае между этими двумя типами нет разницы.
+
+Пример ClusterPolicy типа "mutate" для изменения revisionHistoryLimit:
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+spec:
+  background: true
+  mutateExistingOnPolicyUpdate: true
+  rules:
+  - match:
+      any:
+      - resources:
+          kinds:
+          - Deployment
+          names:
+          - '*'
+          namespaces:
+          - test
+          - dev
+          - prod
+    mutate:
+      patchStrategicMerge:
+        spec:
+          revisionHistoryLimit: 3
+      targets:
+      - apiVersion: apps/v1
+        kind: Deployment
+        name: '*'
+        namespace: test
+      - apiVersion: apps/v1
+        kind: Deployment
+        name: '*'
+        namespace: dev
+      - apiVersion: apps/v1
+        kind: Deployment
+        name: '*'
+        namespace: prod
+    name: set-history-limit
+  validationFailureAction: Audit
+
+replace-image-registry
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: replace-image-registry
+spec:
+  background: true
+  mutateExistingOnPolicyUpdate: true
+  rules:
+  - name: replace-image-registry
+    match:
+      any:
+       - resources:
+            kinds:
+            - Deployment
+            names:
+            - "nginx"
+            - "*-nginx"
+            namespaces:
+            - '*'
+    mutate:
+      targets:
+      - apiVersion: apps/v1
+        kind: Deployment
+        name: nginx
+        namespace: '*'
+      patchesJson6902: |-
+        - op: replace
+          path: "/spec/template/spec/containers/0/image"
+          value: "nginx:stable-alpine3.17"
