@@ -1,0 +1,64 @@
+X.509 Certificate Exporter - Экспортер сертификатов Prometheus, ориентированный на мониторинг срока действия, написанный на Go. Поиск сертификатов осуществляется по принципу autodiscovery.
+
+Получение уведомлений до истечения срока действия:
+
+        Файлы в кодировке PEM по пути или каталогам сканирования.
+        Kubeconfigs со встроенными сертификатами или ссылками на файлы.
+        Секреты TLS из кластера Kubernetes
+
+source code: https://github.com/enix/x509-certificate-exporter
+Установлен с помощью Helm в namespace certificate-exporter
+
+Чарт есть в artifacthub: https://artifacthub.io/packages/helm/enix/x509-certificate-exporter
+
+VMRule "x509"  для алертов
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: x509
+spec:
+  groups:
+  - name: x509-certificate-exporter.rules
+    rules:
+    - alert: X509ExporterReadErrors
+      annotations:
+        description: Over the last 15 minutes, this x509-certificate-exporter instance
+          has experienced errors reading certificate files or querying the Kubernetes
+          API. This could be caused by a misconfiguration if triggered when the exporter
+          starts.
+        summary: Increasing read errors for x509-certificate-exporter
+      expr: delta(x509_read_errors[15m]) > 0
+      for: 5m
+      labels:
+        severity: warning
+    - alert: CertificateError
+      annotations:
+        description: Certificate could not be decoded {{if $labels.secret_name }}in
+          Kubernetes secret "{{ $labels.secret_namespace }}/{{ $labels.secret_name
+          }}"{{else}}at location "{{ $labels.filepath }}"{{end}}
+        summary: Certificate cannot be decoded
+      expr: x509_cert_error > 0
+      for: 15m
+      labels:
+        severity: warning
+    - alert: CertificateRenewal
+      annotations:
+        description: Certificate for "{{ $labels.subject_CN }}" should be renewed
+          {{if $labels.secret_name }}in Kubernetes secret "{{ $labels.secret_namespace
+          }}/{{ $labels.secret_name }}"{{else}}at location "{{ $labels.filepath }}"{{end}}
+        summary: Certificate should be renewed
+      expr: ((x509_cert_not_after - time()) / 86400) < 28
+      for: 15m
+      labels:
+        severity: warning
+    - alert: CertificateExpiration
+      annotations:
+        description: Certificate for "{{ $labels.subject_CN }}" is about to expire
+          {{if $labels.secret_name }}in Kubernetes secret "{{ $labels.secret_namespace
+          }}/{{ $labels.secret_name }}"{{else}}at location "{{ $labels.filepath }}"{{end}}
+        summary: Certificate is about to expire
+      expr: ((x509_cert_not_after - time()) / 86400) < 14
+      for: 15m
+      labels:
+        severity: critical
+
