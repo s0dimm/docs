@@ -1,0 +1,130 @@
+ScyllaDB — это распределенное хранилище данных NoSQL с широкими столбцами с открытым исходным кодом.
+
+Он был разработан для совместимости с Apache Cassandra, обеспечивая при этом значительно более высокую пропускную способность и меньшие задержки.
+
+source code: https://github.com/scylladb/scylladb
+
+install: 
+helm repo add scylla https://scylla-operator-charts.storage.googleapis.com/stable
+helm repo update
+helm search repo scylla
+
+В репозитории содержится три helm chart:
+
+    scylla;
+    scylla operator;
+    scylla manager.
+
+Первая  —  сама БД, основа которой  —  ScyllaCluster CRD, то есть определение специального ресурса k8s. Это yaml-файл для настройки кластера scylla: его размера, ресурсов, файловой системы и т. д.
+
+В scylla operator устанавливается контроллер k8s, где из этого yaml создаются StatefullSet, службы и другие сущности k8s.
+
+scylla manager  —  это фактически служба-синглтон для автоматизации задач, подключаемая ко всем узлам scylla. Ею выполняются внутрикластерные задачи, такие как восстановление и резервное копирование в облачном хранилище.
+
+
+# scylla-manager values.yaml
+# ...
+scylla:
+  cpuset: false
+  automaticOrphanedNodeCleanup: true
+  repairs:
+    - name: "weekly manager-rack repair"
+      intensity: "2"
+      interval: "7d"
+      dc: [ "msk" ]
+  serviceMonitor:
+    create: false
+  developerMode: true
+  scyllaImage:
+    tag: 5.2.0
+  agentImage:
+    tag: 3.0.0
+  datacenter: msk
+  racks:
+  - name: staging
+    placement:
+      tolerations:
+        - key: "infra"
+          operator: "Exists"
+          effect: "NoSchedule"
+    members: 3
+    storage:
+      capacity: 6Gi
+      storageClassName: local
+    resources:
+      limits:
+        cpu: 1
+        memory: 1000Mi
+      requests:
+        cpu: 250m
+        memory: 200Mi
+
+создаем KEYSPACE в режиме replication:
+ALTER KEYSPACE jaeger_k8s WITH replication = { 'class' : 'NetworkTopologyStrategy', 'mks' : 3};
+
+jaeger:
+apiVersion: jaegertracing.io/v1
+kind: Jaeger
+metadata:
+  name: jaeger-scylla
+spec:
+  strategy: production
+  query:
+    options:
+      log-level: info
+      query:
+        base-path: /
+  collector:
+    minReplicas: 2
+    maxReplicas: 3
+    resources:
+      limits:
+        cpu: 500m
+        memory: 516Mi
+  storage:
+    type: cassandra
+    options:
+      log-level: debug
+      cassandra:
+        servers: scylla-manager-client.scylla-manager.svc
+        keyspace: jaeger_k8s
+    cassandraCreateSchema:
+      enabled: false
+
+jaeger auto create schema:
+apiVersion: jaegertracing.io/v1
+kind: Jaeger
+metadata:
+  name: jaeger-scylla
+spec:
+  strategy: production
+  query:
+    options:
+      log-level: info
+      query:
+        base-path: /
+  collector:
+    minReplicas: 2
+    maxReplicas: 3
+    resources:
+      limits:
+        cpu: 500m
+        memory: 516Mi
+  storage:
+    type: cassandra
+    options:
+      log-level: debug
+      cassandra:
+        servers: scylla-manager-client.scylla-manager.svc
+        keyspace: jaeger_k8s
+    cassandraCreateSchema:
+      datacenter: "msk"
+      mode: "prod"
+
+note:
+
+Задание создания схемы по умолчанию использует MODE=prod, что подразумевает коэффициент репликации 2, используя NetworkTopologyStrategy в качестве класса,
+что фактически означает, что в кластере Cassandra требуется как минимум 3 узла.
+
+Нравится
+Станьте первыми кому понравится это
