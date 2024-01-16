@@ -1,0 +1,140 @@
+CloudNativePG — это оператор с открытым исходным кодом, предназначенный для управления рабочими нагрузками PostgreSQL в любом поддерживаемом кластере Kubernetes, работающем в частных, общедоступных, гибридных или мультиоблачных средах.
+
+Главное правило CloudNativePG: один кластер под одну базу данных.
+
+quick start:
+kubectl apply -f \
+  https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.16/releases/cnpg-1.16.5.yaml
+   
+kubectl get deploy -n cnpg-system cnpg-controller-manage
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: test-pg
+spec:
+  instances: 3
+  primaryUpdateStrategy: unsupervised
+  storage:
+    storageClass: local
+    size: 5Gi
+  bootstrap:
+    initdb:
+      database: test_user
+      owner: test_user
+      secret:
+        name: test-pg-user
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: test-pg-user
+data:
+  username: {{ test_user | b64enc }}
+  password: {{ strong_password | b64enc }}
+type: kubernetes.io/basic-auth
+
+Для подключения к PostgreSQL оператор в выбранном окружении создает для каждого кластера отдельный (по имени кластера) набор Service’ов для разных режимов доступа. Например, список Service’ов для кластера test-pg:
+
+test-pg-rw — чтение/запись с master-инстанса;
+ 
+test-pg-ro — чтение только с реплик;
+ 
+test-pg-r — чтение с любого инстанса.
+
+
+Резервное копирование и восстановление
+
+Бэкапы в CloudNativePG реализованы на основе Barman — мощного Open Source-инструмента для резервного копирования и восстановления PostgreSQL.
+
+В качестве хранилища данных могут быть использованы облачные сервисы AWS S3, Microsoft Azure Blob Storage и Google Cloud Storage, а также S3-совместимые сервисы, например, MinIO и Linode. Поддерживается несколько алгоритмов сжатия (gzip, bzip2, snappy) и шифрование.
+
+Бэкапы настраиваются в секции spec.backup ресурса Cluster. Приведём рабочий пример с описанием резервного копирования в S3-совместимое хранилище:
+
+backup:
+  retentionPolicy: "7d"
+  barmanObjectStore:
+    destinationPath: "s3://backups/pg-test"
+    endpointURL: "http://minio-api.minio.svc:9000"
+    s3Credentials:
+      accessKeyId:
+        name: s3-creds
+        key: accessKeyId
+      secretAccessKey:
+        name: s3-creds
+        key: secretAccessKey
+    wal:
+      compression: gzip
+
+Архивирование журналов предзаписи WAL с интервалом в 5 минут начнётся сразу после подключения хранилища. Для ручного создания полной резервной копии необходим ресурс Backup. Также можно настроить бэкап по расписанию с помощью ScheduledBackup: 
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: test-pg-backup
+spec:
+  immediate: true
+  schedule: "0 2 * * * *"
+  cluster:
+    name: test-pg
+Восстановление
+
+Для восстановления требуется хотя бы одна полная резервная копия в хранилище. Выполнить восстановление в текущий кластер нельзя: необходимо определить новый ресурс Cluster с другим названием в секции metadata.name.
+
+При восстановлении в окружение с исходным кластером PostgreSQL источником данных в spec.bootstrap.recovery можно указать существующий ресурс Backup:
+
+kubectl -n test get backups.postgresql.cnpg.io
+NAME                           AGE     CLUSTER      PHASE       ERROR
+[...]
+test-pg-backup-1657497600   5h28m   test-pg   completed
+ 
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: grafana-pg-restore
+spec:
+  [...]
+  bootstrap:
+    recovery:
+      backup:
+        name: test-pg-backup-1657497600
+
+
+Восстановление в другие окружения или Kubernetes-кластер выполняем из хранилища:
+
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: test-pg-restore
+spec:
+  [...]
+  bootstrap:
+    recovery:
+      source: test-pg
+      recoveryTarget:
+        targetTime: "2023-11-17 11:45:00.00000+00"
+  externalClusters:
+    - name: test-pg
+      barmanObjectStore:
+        destinationPath: "s3://backups/pg-test"
+        endpointURL: "http://minio-api.minio.svc:9000"
+        s3Credentials:
+         accessKeyId:
+            name: s3-creds
+            key: accessKeyId
+          secretAccessKey:
+            name: s3-creds
+            key: secretAccessKey
+
+CloudNativePG Plugin:
+
+install:
+curl -sSfL \
+  https://github.com/cloudnative-pg/cloudnative-pg/raw/main/hack/install-cnpg-plugin.sh | \
+  sh -s -- -b /usr/local/bin
+
+use:
+kubectl cnpg <command> <args...>
+kubectl cnpg status test-pg
+
+
