@@ -40,7 +40,15 @@ Helmwave — это инструмент для декларативного о�
 
 Helmwave example:
 version: "0.32.1"
- 
+lifecycle:
+  pre_build:
+    - cmd: /bin/bash 
+      args:
+        - "-c"   
+        - "helm repo update"
+      show: true
+      allow_failure: false
+
 repositories:
   - name: bitnami
     url: https://charts.bitnami.com/bitnami
@@ -64,3 +72,31 @@ usage:
 helmwave up --build --kubedog -- build a plan, apply your plan
 helmwave rollback -- rollback your plan
 helmwave down -- delete all
+
+.gitlab-ci.yml 
+stages:
+- publish
+- rollback
+- destroy
+
+Publish Helm Release:
+    stage: publish
+    script:
+    - >-
+        helmwave up --build --kubedog --plandir .helmwave/
+    tags: [helmwave]
+
+Rollback:
+    stage: rollback
+    script:
+    - >-
+        helmwave rollback
+    tags: [helmwave]
+    when: manual
+
+Destroy:
+    stage: destroy
+    script:
+    - helmwave down
+    tags: [helmwave]
+    when: manual
