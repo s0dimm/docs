@@ -1,0 +1,103 @@
+ператор Redis создает, настраивает и управляет Redis высокой доступности с автоматическим аварийным переключением Sentinel поверх Kubernetes.
+
+source code: https://github.com/spotahome/redis-operator
+
+Оператор установлен в ns: redis
+Так как helm chart при установке выдает ошибку, установка произведена через kubectl appy -f . (https://github.com/spotahome/redis-operator/issues/679)
+kubectl create -f /redis-operator/manifests/databases.spotahome.com_redisfailovers.yaml (CustomResourceDefinition)
+kubectl create -f /redis-operator/example/operator/
+
+yaml redisfailover manifest:
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: redisfailover
+spec:
+  auth:
+    secretPath: redis-auth
+  sentinel:
+    replicas: 3
+    image: redis:7.2-alpine
+    imagePullPolicy: IfNotPresent
+    tolerations:
+      - key: ""
+        operator: "Exists"
+        effect: "NoSchedule"
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: In
+                  values:
+                    - ""
+  redis:
+    replicas: 4
+    image: redis:7.2-alpine
+    imagePullPolicy: IfNotPresent
+    exporter:
+      enabled: true
+      image: oliver006/redis_exporter:v1.57.0-alpine
+      args:
+        - --web.telemetry-path
+        - /metrics
+      env:
+        - name: REDIS_EXPORTER_LOG_FORMAT
+          value: txt
+    storage:
+      persistentVolumeClaim:
+        metadata:
+          name: redis-persistent-data
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 200Mi
+          storageClassName: csi-rbd-sc
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: redis
+                  app.kubernetes.io/managed-by: redis-operator
+                  app.kubernetes.io/name: redisfailover
+                  app.kubernetes.io/part-of: redis-failover
+                  redisfailovers-role: slave
+                  redisfailovers.databases.spotahome.com/name: redisfailover
+              topologyKey: kubernetes.io/hostname
+
+
+sentinel'ы располагаются на узлах control-plane, чтобы соответствовать kubernetes zone best practices на основе трех зон мультидоступности 
+
+redisfailover располагаются на worker нодах. Redis aof и\или rdb сохраняются в хранилище 
+
+Для того, чтобы приложения всегда обращались к redis master, была использована утилита redis-sentinel-proxy.
+
+source code: https://github.com/flant/redis-sentinel-proxy/tree/master
+
+Как она работает:
+
+        При старте подключается к Sentinel и начинает раз в секунду опрашивать адрес текущего мастера.
+        Одновременно с этим ожидает входящие соединения.
+        Когда приходит запрос на соединение от клиента, она начинает работать как прокси, подставляя адрес текущего мастера в Sentinel-кластере.
+
+Таким образом, подключение к redis-sentinel-proxy работает как будто это прямое подключение к Redis (к актуальному мастеру кластера).     
+
+Подход с haproxy для поиска master считаю устаревшим. Обращаться к Sentinel-кластеру наиболее корректно, так как это более быстрое и правильное решение.
+
+Для подключение необходимо использовать service в ns redis. Для коннекта из другого namespace: redis.redis.svc. Порт стандартный для redis - 6379
+
+Финальная проверка
+
+Временные затраты по итогам тестов:
+
+        5 секунд — на ожидание Sentinel, поднимется ли мастер;
+        2 секунды — на смену лидера;
+        1-2 секунды (если укладываемся в таймаут) — на отработку readiness probe.
+
+Итого — 10 секунд 
