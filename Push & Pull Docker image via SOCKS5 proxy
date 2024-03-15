@@ -1,0 +1,17 @@
+create /etc/default/docker:
+nvim /etc/default/docker
+____________________________________________
+HTTP_PROXY=socks5://user:pass@14.88.*.*:1080
+HTTPS_PROXY=socks5://user:pass@14.88.*.*:1080
+NO_PROXY=localhost,127.0.0.1
+
+ edit docker.service:
+nvim /usr/lib/systemd/system/docker.service
+___________________________________________
+[Service]
+******
+******
+EnvironmentFile=/etc/default/docker
+
+restart docker:
+systemctl daemon-reload  && systemctl restart docker
